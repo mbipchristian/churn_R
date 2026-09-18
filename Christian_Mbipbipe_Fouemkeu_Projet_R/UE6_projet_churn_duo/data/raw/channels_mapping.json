@@ -1,0 +1,18 @@
+[
+  {
+    "channel": "web",
+    "channel_type": "online"
+  },
+  {
+    "channel": "store",
+    "channel_type": "offline"
+  },
+  {
+    "channel": "partner",
+    "channel_type": "partner"
+  },
+  {
+    "channel": "callcenter",
+    "channel_type": "assisted"
+  }
+]

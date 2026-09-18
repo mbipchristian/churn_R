@@ -1,0 +1,484 @@
+---
+title: "Rapport Décisionnel — Prédiction de l'Activité Client (Churn)"
+subtitle: "UTT — UE6 Projet R | 2026"
+author: "Christian MBIPBIPE FOUEMKEU"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    number_sections: true
+    df_print: kable
+    css: |
+      body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #2c3e50; }
+      h1 { color: #1F4E79; border-bottom: 3px solid #2E75B6; padding-bottom: 6px; }
+      h2 { color: #2E75B6; }
+      h3 { color: #5D6D7E; }
+      .callout-key  { background: #EBF5FB; border-left: 5px solid #2E75B6; padding: 14px 18px; border-radius: 4px; margin: 16px 0; }
+      .callout-warn { background: #FDEDEC; border-left: 5px solid #C0392B; padding: 14px 18px; border-radius: 4px; margin: 16px 0; }
+      .callout-ok   { background: #EAFAF1; border-left: 5px solid #1E8449; padding: 14px 18px; border-radius: 4px; margin: 16px 0; }
+      .kpi-box { display: inline-block; background: #2E75B6; color: white; border-radius: 8px;
+                 padding: 14px 28px; margin: 6px; text-align: center; min-width: 150px; }
+      .kpi-box .kpi-val { font-size: 2em; font-weight: bold; display: block; }
+      .kpi-box .kpi-lbl { font-size: 0.85em; opacity: 0.9; }
+      .kpi-green { background: #1E8449; }
+      .kpi-purple { background: #8E44AD; }
+      table { border-collapse: collapse; width: 100%; }
+      th { background-color: #1F4E79; color: white; padding: 8px 12px; }
+      td { padding: 7px 12px; }
+      tr:nth-child(even) { background-color: #F2F8FD; }
+      .badge { display: inline-block; padding: 3px 9px; border-radius: 12px;
+               font-size: 0.8em; font-weight: bold; color: white; }
+      .badge-red   { background: #C0392B; }
+      .badge-green { background: #1E8449; }
+      .badge-blue  { background: #2E75B6; }
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = FALSE,
+  warning   = FALSE,
+  message   = FALSE,
+  fig.align = "center",
+  fig.width = 8,
+  fig.height = 4.5
+)
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+```
+
+---
+
+# Message Clé {#message-cle}
+
+<div class="callout-key">
+**Synthèse exécutive**
+
+Ce projet vise à prédire l'activité des clients (actifs / inactifs) à partir de leurs données comportementales et transactionnelles. Deux modèles ont été testés — régression logistique et Random Forest — mais tous deux affichent des performances limitées (**ROC AUC < 0,50**), révélant un faible pouvoir prédictif des variables disponibles. La priorité absolue est d'enrichir le feature engineering avant tout déploiement opérationnel.
+</div>
+
+---
+
+# Données & Qualité {#donnees}
+
+## Sources de données
+
+Le projet mobilise **cinq sources hétérogènes** combinées par jointures sur `customer_id` et `region` :
+
+```{r sources-table}
+tibble(
+  Fichier            = c("customers.csv", "transactions.csv", "labels.csv",
+                         "regions_mapping.csv", "channels_mapping.json"),
+  Format             = c("CSV", "CSV", "CSV", "CSV", "JSON"),
+  `Contenu`          = c(
+    "Données socio-démographiques (âge, région, date d'inscription)",
+    "Historique transactionnel (montant, date, canal)",
+    "Variable cible binaire : is_active (yes / no)",
+    "Correspondance région → groupe géographique",
+    "Mapping des canaux de distribution"
+  ),
+  Rôle = c("Base client", "Features comportementales", "Cible", "Enrichissement géo", "Enrichissement canal")
+) %>%
+  kable(align = c("l","c","l","l")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "bordered"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE, color = "#1F4E79") %>%
+  column_spec(2, color = "#2E75B6")
+```
+
+## Distribution de la variable cible
+
+```{r target-dist, fig.height=3.5}
+target_df <- tibble(
+  Statut   = c("Actifs (yes)", "Inactifs (no)"),
+  Effectif = c(542, 298),
+  Part     = c(64.5, 35.5)
+)
+
+ggplot(target_df, aes(x = Statut, y = Effectif, fill = Statut)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  geom_text(aes(label = paste0(Effectif, "\n(", Part, " %)")),
+            vjust = -0.4, fontface = "bold", size = 4.2) +
+  scale_fill_manual(values = c("Actifs (yes)" = "#1E8449", "Inactifs (no)" = "#8E44AD")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(title = "Distribution des clients actifs vs inactifs",
+       x = NULL, y = "Nombre de clients") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(color = "#1F4E79", face = "bold"),
+        panel.grid.major.x = element_blank())
+```
+
+<div class="callout-warn">
+**Déséquilibre des classes (64 / 36)** — Ce ratio induit un biais systématique vers la classe majoritaire (actifs). Sans traitement (SMOTE, pondération), le modèle a tendance à prédire "yes" par défaut, ce qui pénalise fortement la détection des inactifs.
+</div>
+
+## Traitements de qualité appliqués
+
+```{r quality-table}
+tibble(
+  Étape = c(
+    "Détection des vides",
+    "Typage des dates",
+    "Suppression des NA (clients)",
+    "Imputation numérique",
+    "Imputation catégorielle",
+    "Encodage dummy",
+    "Normalisation"
+  ),
+  Traitement = c(
+    'Remplacement de "" par NA dans toutes les tables',
+    "Conversion signup_date et transaction date → format Date",
+    "drop_na() sur la table clients (avant join)",
+    "step_impute_mean() sur toutes les variables numériques",
+    "step_impute_mode() sur toutes les variables nominales",
+    "step_dummy() sur les prédicteurs nominaux",
+    "step_normalize() sur les prédicteurs numériques"
+  ),
+  Cible = c("Toutes tables", "clients, transactions", "clients",
+            "Train / Test", "Train / Test", "Train / Test", "Train / Test")
+) %>%
+  kable(align = c("l","l","c")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE)
+```
+
+---
+
+# Analyse & Modélisation {#modelisation}
+
+## Feature engineering
+
+Un ensemble de **10 variables comportementales et financières** a été construit à partir des transactions brutes :
+
+```{r features-table}
+tibble(
+  Variable = c(
+    "n_transactions", "total_amount", "avg_amount / max / min",
+    "n_refunds", "recency_days", "tenure_active",
+    "avg_monthly_txn", "channel", "tenure_simple", "region_group"
+  ),
+  Type = c("Comptage","Montant","Montant","Comptage","Temps","Temps",
+           "Fréquence","Catégoriel","Temps","Catégoriel"),
+  Description = c(
+    "Nombre total de transactions par client",
+    "Somme des montants transactés",
+    "Statistiques des montants individuels",
+    "Nombre de transactions à montant négatif (remboursements)",
+    "Jours depuis la dernière transaction (récence)",
+    "Durée entre 1ère et dernière transaction (ancienneté active)",
+    "Moyenne mensuelle de transactions (régularité)",
+    "Canal dominant d'utilisation (web, mobile, agence…)",
+    "Ancienneté client depuis l'inscription",
+    "Groupe géographique enrichi"
+  )
+) %>%
+  kable(align = c("l","c","l")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE, monospace = TRUE, color = "#1F4E79") %>%
+  column_spec(2, color = "#2E75B6")
+```
+
+## Coefficients significatifs (Régression Logistique)
+
+```{r coefs, fig.height=3.5}
+coefs <- tibble(
+  term      = c("age", "marketing_opt_in", "support_tickets", "tenure_simple",
+                "n_transactions", "total_amount", "avg_amount"),
+  estimate  = c(0.238, 0.213, -0.099, 0.054, 0.453, -0.284, 0.216),
+  p.value   = c(0.00538, 0.01050, 0.232, 0.522, 0.159, 0.410, 0.367),
+  Significatif = c(TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE)
+)
+
+ggplot(coefs, aes(x = reorder(term, estimate), y = estimate,
+                  fill = ifelse(estimate > 0, "#1E8449", "black"))) +
+  geom_col(show.legend = FALSE, width = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_point(data = filter(coefs, Significatif),
+             aes(x = reorder(term, estimate), y = estimate),
+             shape = 8, size = 3, color = "red", show.legend = FALSE) +
+  scale_fill_identity() +
+  coord_flip() +
+  labs(title = "Coefficients de la régression logistique",
+       subtitle = "★ = significatif (p < 0.05)",
+       x = NULL, y = "Coefficient (log-odds)") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(color = "#1F4E79", face = "bold"))
+```
+
+> Les deux seules variables significatives au seuil 5 % sont **l'âge** (β = 0.238) et le **marketing opt-in** (β = 0.213). Les variables transactionnelles (montants, fréquence) ne sont pas significatives, ce qui explique en partie les faibles performances.
+
+## Résultats comparatifs des modèles
+
+```{r metrics-table}
+tibble(
+  Métrique            = c("Accuracy","Balanced Accuracy","Precision",
+                           "Recall (Sensibilité)","F1-Score","Spécificité",
+                           "ROC AUC","PR AUC","Log Loss"),
+  `Régression Logistique` = c("63.9 %","52.5 %","47.1 %","13.3 %","20.8 %",
+                               "91.7 %","0.427","0.321","0.891"),
+  `Random Forest`         = c("61.0 %","54.0 %","48.0 %","20.0 %","25.0 %",
+                               "88.0 %","0.50","0.34","0.85"),
+  Interprétation          = c("Médiocre","Proche du hasard","Faible","Très faible",
+                               "Insuffisant","Bon","⚠ Sous le hasard","Faible","Élevé (mauvais)")
+) %>%
+  kable(align = c("l","c","c","l")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(4, italic = TRUE, color = "#7D3C98") %>%
+  row_spec(7, bold = TRUE, color = "white", background = "#C0392B")
+```
+
+<div class="callout-warn">
+**ROC AUC < 0,50 pour la régression logistique** — Un AUC inférieur à 0,5 signifie que le modèle est moins performant qu'un classifieur aléatoire. Cela ne traduit pas un bug, mais un manque de signal discriminant dans les variables disponibles. Le Random Forest atteint ~0,50, soit le niveau du hasard.
+</div>
+
+## Modèle retenu : Régression Logistique
+
+```{r model-comparison}
+tibble(
+  Critère             = c("Interprétabilité","Performance","Stabilité",
+                           "Explicabilité métier","Gain vs Random Forest"),
+  `Régression Logistique` = c(" Élevée (coefficients lisibles)",
+                               " Limitée (ROC AUC 0.43)",
+                               " Stable",
+                               " Oui (influence variable par variable)",
+                               "— Référence"),
+  `Random Forest`         = c(" Boîte noire",
+                               " Similaire (ROC AUC ~0.50)",
+                               " Variable selon hyperparamètres",
+                               " Difficile",
+                               "Nul (aucun gain significatif)")
+) %>%
+  kable(align = c("l","l","l")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(2, color = "#1E8449") %>%
+  column_spec(3, color = "#7D3C98")
+```
+
+<div class="callout-ok">
+**Modèle retenu : Régression Logistique** — Dans un contexte où les deux modèles affichent des performances équivalentes et insuffisantes, la régression logistique est privilégiée pour son interprétabilité. Elle permet aux équipes métier de comprendre l'influence de chaque variable et de mieux cibler les actions correctives.
+</div>
+
+---
+
+# Choix du Seuil et Recommandations {#seuil}
+
+## Problème du seuil par défaut (0.5)
+
+Avec un seuil à 0,5, le modèle subit le biais du déséquilibre de classe :
+
+```{r seuil-probleme, fig.height=3}
+tibble(
+  Métrique = c("Recall (inactifs détectés)", "Précision", "F1-Score", "Spécificité"),
+  Valeur   = c(13.3, 47.1, 20.8, 91.7),
+  Évaluation = c("Très faible ", "Faible ", "Insuffisant ", "Élevée ")
+) %>%
+  ggplot(aes(x = reorder(Métrique, Valeur), y = Valeur,
+             fill = c("#C0392B","#E67E22","#C0392B","#1E8449"))) +
+  geom_col(show.legend = FALSE, width = 0.55) +
+  geom_text(aes(label = paste0(Valeur, " %")), hjust = -0.1, fontface = "bold", size = 3.8) +
+  scale_fill_identity() +
+  scale_y_continuous(limits = c(0, 110)) +
+  coord_flip() +
+  labs(title = "Performances au seuil par défaut (0.5)",
+       x = NULL, y = "Valeur (%)") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(color = "#1F4E79", face = "bold"))
+```
+
+## Stratégies d'ajustement du seuil
+
+```{r seuil-table}
+tibble(
+  Seuil           = c("0.3 – 0.4", "0.5 (défaut)", "0.6 – 0.7"),
+  Effet           = c("Plus de vrais positifs (inactifs détectés)",
+                      "Biais vers la classe majoritaire",
+                      "Moins de faux positifs (actifs mal classés)"),
+  Avantage        = c("Meilleure couverture des inactifs",
+                      "Comportement observé actuel",
+                      "Ciblage marketing plus précis"),
+  Inconvénient    = c("Augmentation des faux positifs",
+                      "Recall très faible (13.3 %)",
+                      "Risque de manquer des inactifs"),
+  `Usage recommandé` = c("Détection préventive du churn",
+                          "Non recommandé",
+                          "Campagnes de fidélisation ciblées")
+) %>%
+  kable(align = c("c","l","l","l","l")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE, color = "white",
+              background = c("#1E8449","#E67E22","#2E75B6")) %>%
+  row_spec(3, bold = TRUE)
+```
+
+## Implémentation recommandée
+
+```r
+# Appliquer un seuil personnalisé de 0.65
+predictions <- predictions %>%
+  mutate(
+    custom_class = ifelse(.pred_yes >= 0.65, "yes", "no"),
+    custom_class = factor(custom_class, levels = c("no", "yes"))
+  )
+
+# Évaluer avec ce nouveau seuil
+metric_set(accuracy, precision, recall, f_meas)(
+  predictions,
+  truth    = is_active,
+  estimate = custom_class
+)
+```
+
+<div class="callout-key">
+**Recommandation : seuil à 0,65** — Ce seuil réduit les coûts marketing liés aux faux positifs (clients actifs incorrectement ciblés par des campagnes de réactivation). Il est adapté à un contexte où les ressources de relance sont limitées et où la précision du ciblage prime sur la couverture exhaustive.
+</div>
+
+---
+
+# Limites et Pistes d'Amélioration {#limites}
+
+## Limites identifiées
+
+```{r limites-table}
+tibble(
+  `#` = 1:6,
+  Limite = c(
+    "ROC AUC < 0,50 (modèle en dessous du hasard)",
+    "Déséquilibre des classes non traité",
+    "Absence de variables temporelles fines",
+    "Tuning Random Forest inefficace",
+    "Pas de courbe ROC ni matrice de confusion",
+    "Pipeline de mise à jour absent"
+  ),
+  Impact = c("Critique","Élevé","Élevé","Modéré","Modéré","Faible"),
+  Détail = c(
+    "Manque de signal discriminant dans les variables disponibles",
+    "Aucun SMOTE ni pondération de classe appliqué",
+    "Pas d'indicateurs de tendance récente (30/60/90 derniers jours)",
+    "tune() non intégré → grille de tuning sans effet réel",
+    "Analyse visuelle incomplète pour le choix du seuil optimal",
+    "Données figées, pas de réentraînement périodique prévu"
+  )
+) %>%
+  kable(align = c("c","l","c","l")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE, width = "3em") %>%
+  column_spec(3, bold = TRUE,
+              color = c("white","white","white","white","white","white"),
+              background = c("#C0392B","#C0392B","#C0392B","#E67E22","#E67E22","#2E75B6"))
+```
+
+## Pistes d'amélioration
+
+### Feature Engineering avancé
+
+```{r fe-pistes}
+tibble(
+  Piste = c(
+    "Score RFM (Récence × Fréquence × Montant)",
+    "Indicateurs de tendance temporelle",
+    "Variables d'interaction",
+    "Segmentation comportementale préalable"
+  ),
+  Description = c(
+    "Proxy synthétique de l'activité, très discriminant en churn",
+    "Évolution du comportement sur 30 / 60 / 90 derniers jours vs historique",
+    "Ex : fréquence × montant moyen, récence × ancienneté",
+    "Clustering K-means avant modélisation pour homogénéiser les groupes"
+  ),
+  Priorité = c(" Haute"," Haute"," Moyenne"," Basse")
+) %>%
+  kable(align = c("l","l","c")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE, color = "#1F4E79")
+```
+
+### Gestion du déséquilibre
+
+```r
+# Option 1 : SMOTE via themis
+library(themis)
+rec_balanced <- recipe(is_active ~ ., data = train_data) %>%
+  step_rm(customer_id) %>%
+  step_impute_mean(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_smote(is_active)   # Oversampling de la classe minoritaire
+
+# Option 2 : pondération de classe dans glm
+log_model_weighted <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+# + ajout de case_weights dans le workflow
+```
+
+### Modèles alternatifs
+
+```{r models-pistes}
+tibble(
+  Modèle      = c("XGBoost","Régression Logistique + SMOTE",
+                   "Modèle de survie (Cox)","LightGBM"),
+  Avantage    = c(
+    "Capte les non-linéarités, robuste au déséquilibre",
+    "Base solide + correction du biais de classe",
+    "Modélise la durée jusqu'au churn (approche temporelle)",
+    "Rapide, performant sur données tabulaires déséquilibrées"
+  ),
+  Priorité    = c(" Haute"," Haute"," Moyenne"," Moyenne")
+) %>%
+  kable(align = c("l","l","c")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE, monospace = TRUE)
+```
+
+### Correction du tuning Random Forest
+
+```r
+# Le tuning ne fonctionnait pas car tune() n'était pas utilisé dans le modèle
+# Correction :
+rf_model_tune <- rand_forest(
+  trees = 500,
+  mtry  = tune(),   # ← manquait
+  min_n = tune()    # ← manquait
+) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+```
+
+### Restitution & déploiement
+
+```{r deploy-pistes}
+tibble(
+  Action = c(
+    "Courbe ROC interactive dans Shiny",
+    "Simulation de seuil dans Streamlit",
+    "Réentraînement mensuel automatisé",
+    "Export des scores de probabilité"
+  ),
+  Outil  = c("plotly + shiny","altair / plotly","cron + targets (R)","arrow / parquet"),
+  Bénéfice = c(
+    "Aide au choix du seuil optimal visuellement",
+    "Permet aux équipes métier de simuler les impacts",
+    "Maintient la fraîcheur du modèle dans le temps",
+    "Alimenter les dashboards avec les scores individuels"
+  )
+) %>%
+  kable(align = c("l","l","l")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(2, monospace = TRUE, color = "#2E75B6")
+```
+
+---
+
+<div style="text-align:center; color:#888; font-size:0.85em; margin-top:40px; border-top:1px solid #ddd; padding-top:16px;">
+*Rapport conçu par Christian Mbipbipe Fouemkeu, en MS EBDE, 2025 - 2026*
+</div>
