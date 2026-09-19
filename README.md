@@ -1,5 +1,6 @@
 # Rapport Décisionnel — Prédiction de l'Activité Client (Churn)
-Voici le lien vers le rapport html : [rapport décisionnel](rapport_decisionnel.html)
+Voici le lien vers le rapport pdf : [Rapport décisionnel](https://drive.google.com/file/d/1uxBgou--3aeBvbmF-4zoUSJFdzbmhmzo/view?usp=sharing)
+
 ## 🎯 Synthèse
 
 Projet de prédiction de l'activité client (actif/inactif) via régression logistique et Random Forest. **Performances limitées** (ROC AUC < 0,50) : faible pouvoir prédictif des variables disponibles. Priorité : enrichir le feature engineering avant tout déploiement.
