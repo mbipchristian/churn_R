@@ -1,5 +1,5 @@
 # Rapport Décisionnel — Prédiction de l'Activité Client (Churn)
-Voici le lien vers le rapport html : file:///C:/Users/mbipbipe/Downloads/Christian_Mbipbipe_Fouemkeu_Projet_R/Christian_Mbipbipe_Fouemkeu_Projet_R/rapport_decisionnel.html
+Voici le lien vers le rapport html : [rapport décisionnel](file:///C:/Users/mbipbipe/Downloads/Christian_Mbipbipe_Fouemkeu_Projet_R/Christian_Mbipbipe_Fouemkeu_Projet_R/rapport_decisionnel.html)
 ## 🎯 Synthèse
 
 Projet de prédiction de l'activité client (actif/inactif) via régression logistique et Random Forest. **Performances limitées** (ROC AUC < 0,50) : faible pouvoir prédictif des variables disponibles. Priorité : enrichir le feature engineering avant tout déploiement.
