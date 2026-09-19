@@ -1,5 +1,5 @@
 # Rapport Décisionnel — Prédiction de l'Activité Client (Churn)
-Voici le lien vers le rapport pdf : [Rapport décisionnel](https://drive.google.com/file/d/1uxBgou--3aeBvbmF-4zoUSJFdzbmhmzo/view?usp=sharing)
+Voici le lien vers le rapport détaillé sous format pdf : [Rapport décisionnel](https://drive.google.com/file/d/1uxBgou--3aeBvbmF-4zoUSJFdzbmhmzo/view?usp=sharing)
 
 ## 🎯 Synthèse
 
